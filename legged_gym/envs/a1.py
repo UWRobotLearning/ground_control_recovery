@@ -459,7 +459,7 @@ class A1(BaseEnv):
         self.sim = self.gym.create_sim(self.sim_device_id, self.graphics_device_id, self.physics_engine, self.sim_params)
         mesh_type = self.terrain_cfg.mesh_type
         if mesh_type in ['heightfield', 'trimesh']:
-            self.terrain = Terrain(self.terrain_cfg, self.num_envs)
+            self.terrain = Terrain(self.terrain_cfg)
         if mesh_type=='plane':
             self._create_ground_plane()
         elif mesh_type=='heightfield': 

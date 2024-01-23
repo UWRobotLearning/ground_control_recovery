@@ -14,6 +14,7 @@ from pydantic import TypeAdapter
 from configs.definitions import TaskConfig, TrainConfig, CodesaveConfig
 from configs.overrides.codesave import LogsCodesaveConfig
 from configs.overrides.locomotion_task import LocomotionTaskConfig
+from configs.overrides.recovery_task import RecoveryTaskConfig, RecoveryTrainConfig, RecoveryTerrainConfig, RecoveryEnvConfig
 from configs.hydra import ExperimentHydraConfig
 
 from legged_gym.envs.a1 import A1
@@ -39,15 +40,24 @@ class TrainScriptConfig:
     seed: int = 1
     torch_deterministic: bool = False
     num_envs: int = 4096 
-    iterations: int = 5000 
+    iterations: int = 1500 
     sim_device: str = "cuda:0"
     rl_device: str = "cuda:0"
     headless: bool = False
     checkpoint_root: str = ""
     logging_root: str = from_repo_root("../experiment_logs")
 
-    task: TaskConfig = LocomotionTaskConfig()
-    train: TrainConfig = TrainConfig()
+    task: TaskConfig = RecoveryTaskConfig(
+        env=RecoveryEnvConfig(
+            episode_length_s=3
+        ),
+        terrain=RecoveryTerrainConfig(
+            mesh_type="trimesh",
+            curriculum=True,
+            terrain_type="semivalley"
+        )
+    )  #LocomotionTaskConfig()
+    train: TrainConfig = RecoveryTrainConfig()  #TrainConfig()
     codesave: CodesaveConfig = LogsCodesaveConfig()
 
     hydra: ExperimentHydraConfig = ExperimentHydraConfig()

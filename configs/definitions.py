@@ -32,6 +32,7 @@ class EnvConfig:
     num_envs: int = "${oc.select: num_envs,4096}" # number of envs, obtained from top-level, defaults to 4096
     env_spacing: float = 3. # not used with heightfields/trimeshes
     send_timeouts: bool = True # send out time information to the algorithm
+    start_inactive_steps: int = 0  # number of steps for which controls are disabled at the start of each episode
     episode_length_s: float = 20. # episode length in seconds
 
 @dataclass
@@ -46,15 +47,16 @@ class ObservationConfig:
 class TerrainConfig:
     mesh_type: str = 'plane' # one of [None, 'plane', 'heightfield', 'trimesh', 'valley']
     curriculum: bool = False
+    terrain_type: str = 'locomotion_curriculum' # function name to build grid from (named a "tile function")
     static_friction: float = 1.
     dynamic_friction: float = 1.
     restitution: float = 0.
-    measured_points_x: Tuple[float] = (0.,)
-    measured_points_y: Tuple[float] = (0.,)
+    measured_points_x: Tuple[float, ...] = (0.,)
+    measured_points_y: Tuple[float, ...] = (0.,)
     horizontal_scale: Optional[float] = None # [m]
     vertical_scale: Optional[float] = None # [m]
     selected: bool = False # select a unique terrain type and pass all arguments
-    terrain_kwargs: Optional[Dict[str, Any]] = None # dict of arguments for selected terrain
+    terrain_kwargs: Dict[str, Any] = field(default_factory=lambda: dict()) # dict of arguments for selected terrain
     max_init_terrain_level: Optional[int] = None # starting curriculum state
     terrain_length: Optional[float] = None
     terrain_width: Optional[float] = None
@@ -151,6 +153,9 @@ class DomainRandConfig:
     randomize_gains: bool = False
     added_stiffness_range: Tuple[float, float] = (-5., 5.)
     added_damping_range: Tuple[float, float] = (-0.05, 0.05)
+    # Ege
+    randomize_base_orientation: bool = False
+    randomize_dof_orientation: bool = False
 
 @dataclass
 class RewardsConfig:
@@ -191,6 +196,10 @@ class RewardsConfig:
         stand_still: float = 0.
         feet_contact_forces: float = 0.
         feet_contact_force_change: float = 0.
+        # Ege - adding reward terms for recovery
+        z_axis_orientation: float = 0.
+        xy_drift: float = 0.
+        feet_contact: float = 0.
     scales: RewardScalesConfig = RewardScalesConfig()
 
 @dataclass
@@ -265,6 +274,25 @@ class SimConfig:
     physx: PhysxConfig = PhysxConfig()
 
 
+# Ege
+@dataclass
+class CurriculumConfig:
+    success_rate_mean_window: int = 1
+    promotion_success_rate: float = 0.9
+    demotion_success_rate: float = 0.6
+
+# Ege
+@dataclass
+class GoalStateConfig:
+    min_height_to_goal_ratio: float = 0.7
+    max_height_to_goal_ratio: float = 1.2
+    max_speed: float = 0.25
+    max_angular_vel: float = 0.2
+    max_z_deviation: float = 0.9
+    max_xy_distance: float = 2
+    required_goal_time_s: float = 1
+    reset_on_goal: bool = False
+
 @dataclass
 class TaskConfig:
     _target_: str = "legged_gym.envs.a1.A1"
@@ -281,6 +309,8 @@ class TaskConfig:
     noise: NoiseConfig = NoiseConfig()
     viewer: ViewerConfig = ViewerConfig()
     sim: SimConfig = SimConfig()
+    curriculum: CurriculumConfig = CurriculumConfig()  # not (yet) used in locomotion
+    goal_state: GoalStateConfig = GoalStateConfig()  # not (yet) used in locomotion
 
 ### ======================= Train Configs =============================
 

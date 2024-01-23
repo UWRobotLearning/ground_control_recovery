@@ -11,6 +11,7 @@ class FlatTerrainConfig(TerrainConfig):
 class TrimeshTerrainConfig(TerrainConfig):
     mesh_type: str = "trimesh"
     curriculum: bool = True
+    terrain_type: str = "locomotion_curriculum"
     horizontal_scale: float = 0.1 # [m]
     vertical_scale: float = 0.005 # [m]
     border_size: float = 25. # [m]
