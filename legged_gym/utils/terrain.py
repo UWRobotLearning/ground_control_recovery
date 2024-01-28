@@ -1,15 +1,11 @@
 import numpy as np
-from numpy.random import choice
-from scipy import interpolate
 import noise
-import random
-from scipy.stats import multivariate_normal
 from sklearn.decomposition import PCA
 from legged_gym import LEGGED_GYM_ROOT_DIR
 
 import os
-import time # Ege
-from tqdm import tqdm # Ege
+from dataclasses import dataclass, field # Ege
+from typing import Optional # Ege
 import pickle # Ege
 
 from isaacgym import terrain_utils
@@ -17,134 +13,130 @@ from configs.definitions import TerrainConfig
 
 class Terrain:
     def __init__(self, cfg: TerrainConfig) -> None:
-
         self.cfg = cfg
-        self.type = cfg.mesh_type
-        # TODO: add these to config
-        self.calc_stats = True
-        self.log_stats = False
+        # skip terrain generation if mesh type already specifies terrain
+        if self.cfg.mesh_type in ["none", 'plane']:
+            return
         # Ege - refer to 'resources/terrain' for all terrain artifacts (heightmaps, images, stats etc.)
         #       (make the folder if it doesn't exist yet)
         self.resources_dirname = os.path.join(LEGGED_GYM_ROOT_DIR, 'resources', 'terrain')
         if not os.path.isdir(self.resources_dirname):
             os.makedirs(self.resources_dirname, exist_ok=True)  # creates dirs for the path if needed
-
-        if self.type in ["none", 'plane']:
-            return
-        self.env_length = cfg.terrain_length
-        self.env_width = cfg.terrain_width
-        self.proportions = [np.sum(cfg.terrain_proportions[:i+1]) for i in range(len(cfg.terrain_proportions))]
-
+        # calculated terrain dimensions
         self.num_sub_terrains = cfg.num_rows * cfg.num_cols
-        self.env_origins = np.zeros((cfg.num_rows, cfg.num_cols, 3))
-        # Ege
-        self.stats = {}  # used to store extra info per env/tile (one cell of the grid)
-        self.slope_normals = np.tile(np.array([0,0,1], dtype=float), (cfg.num_rows, cfg.num_cols, 1))
-
-        self.width_per_env_pixels = int(self.env_width / cfg.horizontal_scale)
-        self.length_per_env_pixels = int(self.env_length / cfg.horizontal_scale)
-
+        self.tile_width_px = int(self.cfg.tile_width / cfg.horizontal_scale)
+        self.tile_length_px = int(self.cfg.tile_length / cfg.horizontal_scale)
         self.border = int(cfg.border_size/self.cfg.horizontal_scale)
-        self.tot_cols = int(cfg.num_cols * self.width_per_env_pixels) + 2 * self.border
-        self.tot_rows = int(cfg.num_rows * self.length_per_env_pixels) + 2 * self.border
-
-        self.height_field_raw = np.zeros((self.tot_rows , self.tot_cols), dtype=np.int16)
-
-    # ============= Terrain Multiplexing ============================
-        #TODO: needs to be cleaned up and clearer
-        tile_func = getattr(self, "_tile_" + cfg.terrain_type)
-        self.from_tiles(tile_func=tile_func, tile_args=cfg.terrain_kwargs)
+        self.tot_cols = int(cfg.num_cols * self.tile_width_px) + 2 * self.border
+        self.tot_rows = int(cfg.num_rows * self.tile_length_px) + 2 * self.border
+        # terrain info data structures
+        self.height_field_raw = np.zeros((self.tot_rows, self.tot_cols), dtype=np.int16)
+        self.tile_origins = np.zeros((cfg.num_rows, cfg.num_cols, 3))
+        self.vertices, self.triangles = None, None
+        # Ege
+        self.stats = {}  # used to store extra info per tile (one cell of the grid)
+        # Ege - if a load path is given, load the terrain from there, otherwise create terrain based on tile choice
+        if cfg.load_inner_path is not None:
+            self.load_terrain()
+        else:
+            tile_func = getattr(self, "_tile_" + cfg.terrain_type)
+            self.from_tiles(tile_func=tile_func, tile_args=cfg.terrain_kwargs)
+        # Create heightsamples and populate trimesh if needed
         self.heightsamples = self.height_field_raw
-        if self.type=="trimesh":
+        if self.cfg.mesh_type=="trimesh" and (self.vertices is None or self.triangles is None):
             self.vertices, self.triangles = terrain_utils.convert_heightfield_to_trimesh(   self.height_field_raw,
                                                                                             self.cfg.horizontal_scale,
                                                                                             self.cfg.vertical_scale,
                                                                                             self.cfg.slope_threshold)
-        # Ege - add slope normals if a well-defined slope is available for each tile
-        # TODO - super weird special case, make generic
-        if 'slope' in self.stats:
-            self.slope_normals = slope_normal(self.stats['slope'])
+        # Ege - save terrain as specified in config if it's not already loaded
+        if cfg.save_terrain and cfg.load_inner_path is None:
+            self.save_terrain(terrain_name=cfg.terrain_type)
         # Ege - log stats with other experiment logs if needed
-        if self.log_stats:
+        if self.cfg.log_stats:
             with open("terrain_stats.pickle", "wb+") as f:
                 pickle.dump(self.stats, f)
 
     # ============= Saving/Loading Helpers ============================
-    def save_terrain(self, terrain_name, heightmaps, stats=None, inner_path=""):
+                
+    def get_dims(self):
+        return SavedTerrain.Dimensions(
+                num_rows=self.cfg.num_rows, 
+                num_cols=self.cfg.num_cols,
+                tile_width_px=self.tile_width_px,
+                tile_length_px=self.tile_length_px,
+                border_px=self.border,
+                horizontal_scale=self.cfg.horizontal_scale,
+                vertical_scale=self.cfg.vertical_scale
+            )
+    
+    def save_terrain(self, terrain_name, save_trimesh=True, save_stats=True, inner_path=""):
+        trimesh_vertices, trimesh_faces = (self.vertices, self.triangles) if save_trimesh else (None, None)
+        terrain_to_save = SavedTerrain(
+            name=terrain_name,
+            heightmap=self.height_field_raw,
+            tile_origins=self.tile_origins,
+            dims=self.get_dims(),
+            trimesh_vertices=trimesh_vertices,
+            trimesh_faces=trimesh_faces,
+            stats=self.stats if save_stats else dict()
+        )
         with open(os.path.join(self.resources_dirname, inner_path, f"{terrain_name}.pickle"), "wb+") as f:
-            pickle.dump({"heightmaps": heightmaps, "stats": stats}, f)
+            pickle.dump(terrain_to_save, f)
 
-    def load_terrain(self, terrain_name, inner_path=""):
-        with open(os.path.join(self.resources_dirname, inner_path, f"{terrain_name}.pickle"), "rb") as f:
-            data = pickle.load(f)
-            if type(data) is not dict or "heightmaps" not in data:
-                raise ValueError("Terrain pickle should be a dict containing a " +
-                                 "heightmap grid with the key 'heightmaps'!")
-            heightmaps = data["heightmaps"]
-            grid_dims = (self.cfg.num_rows, self.cfg.num_cols)
-            if heightmaps.shape[:2] != grid_dims:
-                raise ValueError(f"Number of rows/cols in loaded terrain {heightmaps.shape[:2]} " +
-                                 f"doesn't match the config {grid_dims}!")
-            env_dims = (self.width_per_env_pixels, self.length_per_env_pixels)
-            if heightmaps.shape[2:4] != env_dims:
-                raise ValueError(f"Size per env in pixels in loaded terrain {heightmaps.shape[2:4]} " +
-                                 f"doesn't match the config {env_dims}!")
-            if 'stats' in data:
-                self.stats = data['stats']
-            def load_tile(terrain, i, j):
-                terrain.height_field_raw[:,:] = heightmaps[i][j][:env_dims[0], :env_dims[1]]
-            self.from_tiles(load_tile)
+    def load_terrain(self):
+        with open(os.path.join(self.resources_dirname, self.cfg.load_inner_path), "rb") as f:
+            loaded_terrain: SavedTerrain = pickle.load(f)
+            if type(loaded_terrain) is not SavedTerrain:
+                raise ValueError("Terrain pickle should be a SavedTerrain object!")
+            if loaded_terrain.dims != self.get_dims():
+                raise ValueError(f"Dimensions of loaded terrain ({loaded_terrain.dims}) " +
+                                 f"doesn't match the config ({self.get_dims()})!")
+            self.height_field_raw = loaded_terrain.heightmap
+            self.tile_origins = loaded_terrain.tile_origins
+            self.stats = loaded_terrain.stats
+            self.vertices, self.triangles = loaded_terrain.trimesh_vertices, loaded_terrain.trimesh_faces
         
     # ============= Terrain Union/Duplication ==========================
-    def from_tiles(self, tile_func, tile_args={}, save_terrain=False, name="terrain"):
-        width, length = self.width_per_env_pixels, self.length_per_env_pixels
-        if save_terrain:
-            heightmaps = np.zeros((self.cfg.num_rows, self.cfg.num_cols, width, length))
-        for k in range(self.num_sub_terrains):
-            # Env coordinates in the world
-            (i, j) = np.unravel_index(k, (self.cfg.num_rows, self.cfg.num_cols))
-            terrain = terrain_utils.SubTerrain(f"{name}_row_{i}_col_{j}",
-                              width=width,
-                              length=length,
-                              vertical_scale=self.cfg.vertical_scale,
-                              horizontal_scale=self.cfg.horizontal_scale)
-            tile_stats = tile_func(terrain, i, j, **tile_args)
-            if save_terrain:
-                heightmaps[i, j, :width, :width] = terrain.height_field_raw
-            if self.calc_stats:
+
+    def from_tiles(self, tile_func, tile_args={}):
+        for row, col in np.ndindex((self.cfg.num_rows, self.cfg.num_cols)):
+            # Create subterrain object to hold tile heightmap to pass tile_func
+            subterrain = terrain_utils.SubTerrain("terrain",
+                width=self.tile_width_px,
+                length=self.tile_length_px,
+                vertical_scale=self.cfg.vertical_scale,
+                horizontal_scale=self.cfg.horizontal_scale)
+            # Populate tile heightmap and stats via passed in tile function
+            tile_stats = tile_func(subterrain, row, col, **tile_args)
+            # Place the tile into the main heightmap
+            start_x = self.border + row * self.tile_length_px
+            end_x = start_x + self.tile_length_px
+            start_y = self.border + col * self.tile_width_px
+            end_y = start_y + self.tile_length_px
+            self.height_field_raw[start_x: end_x, start_y: end_y] = subterrain.height_field_raw
+            # Set tile origin to be in the middle of the tile, at the same height as the highest point in tile
+            tile_origin_x = (row + 0.5) * self.cfg.tile_length
+            tile_origin_y = (col + 0.5) * self.cfg.tile_width
+            tile_origin_z = np.max(subterrain.height_field_raw) * subterrain.vertical_scale
+            self.tile_origins[row, col] = [tile_origin_x, tile_origin_y, tile_origin_z]
+            # Record stats that have been calculated
+            if self.cfg.calc_stats and tile_stats is not None:
                 for key, stat in tile_stats.items():
+                    # If a key doesn't exist, create numpy array with shape (num_rows, num_cols, <shape of stat>)
+                    # with NaN values indicating no stat has been collected yet.
                     if key not in self.stats:
                         array_size = [self.cfg.num_rows, self.cfg.num_cols]
                         if type(stat) == np.ndarray and np.ndim(stat) > 0:
                             array_size.append(np.array(stat).shape)
                         self.stats[key] = np.full(array_size, np.nan)
-                    self.stats[key][i][j] = tile_stats[key]
-            self.add_terrain_to_map(terrain, i, j)
-        if save_terrain:
-            self.save_terrain(name, heightmaps, self.stats)
-
-    def add_terrain_to_map(self, terrain, row, col):
-        i = row
-        j = col
-        # map coordinate system
-        start_x = self.border + i * self.length_per_env_pixels
-        end_x = self.border + (i + 1) * self.length_per_env_pixels
-        start_y = self.border + j * self.width_per_env_pixels
-        end_y = self.border + (j + 1) * self.width_per_env_pixels
-        self.height_field_raw[start_x: end_x, start_y:end_y] = terrain.height_field_raw
-
-        env_origin_x = (i + 0.5) * self.env_length
-        env_origin_y = (j + 0.5) * self.env_width
-        x1 = int((self.env_length/2. - 1) / terrain.horizontal_scale)
-        x2 = int((self.env_length/2. + 1) / terrain.horizontal_scale)
-        y1 = int((self.env_width/2. - 1) / terrain.horizontal_scale)
-        y2 = int((self.env_width/2. + 1) / terrain.horizontal_scale)
-        env_origin_z = np.max(terrain.height_field_raw[x1:x2, y1:y2])*terrain.vertical_scale
-        self.env_origins[i, j] = [env_origin_x, env_origin_y, env_origin_z]
+                    # Populate the stats dictionary with the newly calculated stat
+                    self.stats[key][row][col] = tile_stats[key]
 
     # ============= Tile Helper Functions ============================
-    def locomotion_tilemaker(self, terrain, choice, difficulty):
+                    
+    def locomotion_tile_helper(self, subterrain, choice, difficulty, tile_type_proportions):
         # TODO: why does this exist if we also have the terrain multiplexing stuff at the top?
+        proportions = [np.sum(tile_type_proportions[:i+1]) for i in range(len(tile_type_proportions))]
         # difficulty is between 0 and 1
         slope = difficulty * 0.4 # in radians (affects straight slope and noisy terrain)
         step_height = 0.05 + 0.18 * difficulty # 23 cm height (may want to decrease for blind locomotion, e.g., to 13 cm)
@@ -153,130 +145,134 @@ class Terrain:
         stone_distance = 0.05 if difficulty==0 else 0.1
         gap_size = 1. * difficulty
         pit_depth = 1. * difficulty
-        if choice < self.proportions[0]:
-            if choice < self.proportions[0]/ 2:
+        if choice < proportions[0]:
+            if choice < proportions[0]/ 2:
                 slope *= -1
-            terrain_utils.pyramid_sloped_terrain(terrain, slope=slope, platform_size=3.)
-        elif choice < self.proportions[1]:
-            terrain_utils.pyramid_sloped_terrain(terrain, slope=slope, platform_size=3.)
-            terrain_utils.random_uniform_terrain(terrain, min_height=-0.05, max_height=0.05, step=0.005, downsampled_scale=0.2)
-        elif choice < self.proportions[3]:
-            if choice<self.proportions[2]:
+            terrain_utils.pyramid_sloped_terrain(subterrain, slope=slope, platform_size=3.)
+        elif choice < proportions[1]:
+            terrain_utils.pyramid_sloped_terrain(subterrain, slope=slope, platform_size=3.)
+            terrain_utils.random_uniform_terrain(subterrain, min_height=-0.05, max_height=0.05, step=0.005, downsampled_scale=0.2)
+        elif choice < proportions[3]:
+            if choice<proportions[2]:
                 step_height *= -1
-            terrain_utils.pyramid_stairs_terrain(terrain, step_width=0.31, step_height=step_height, platform_size=3.)
-        elif choice < self.proportions[4]:
+            terrain_utils.pyramid_stairs_terrain(subterrain, step_width=0.31, step_height=step_height, platform_size=3.)
+        elif choice < proportions[4]:
             num_rectangles = 20
             rectangle_min_size = 1.
             rectangle_max_size = 2.
-            terrain_utils.discrete_obstacles_terrain(terrain, discrete_obstacles_height, rectangle_min_size, rectangle_max_size, num_rectangles, platform_size=3.)
-        elif choice < self.proportions[5]:
-            terrain_utils.stepping_stones_terrain(terrain, stone_size=stepping_stones_size, stone_distance=stone_distance, max_height=0., platform_size=4.)
-        elif choice < self.proportions[6]:
-            self.gap_tilemaker(terrain, gap_size=gap_size, platform_size=3.)
-        elif choice < self.proportions[7]:
-            self.pit_tilemaker(terrain, depth=pit_depth, platform_size=4.)
-        elif choice < self.proportions[8]:
-            terrain_utils.random_uniform_terrain(terrain, min_height=-self.cfg.terrain_noise_magnitude,
+            terrain_utils.discrete_obstacles_terrain(subterrain, discrete_obstacles_height, rectangle_min_size, rectangle_max_size, num_rectangles, platform_size=3.)
+        elif choice < proportions[5]:
+            terrain_utils.stepping_stones_terrain(subterrain, stone_size=stepping_stones_size, stone_distance=stone_distance, max_height=0., platform_size=4.)
+        elif choice < proportions[6]:
+            self.gap_tile_helper(subterrain, gap_size=gap_size, platform_size=3.)
+        elif choice < proportions[7]:
+            self.pit_tile_helper(subterrain, depth=pit_depth, platform_size=4.)
+        elif choice < proportions[8]:
+            terrain_utils.random_uniform_terrain(subterrain, min_height=-self.cfg.terrain_noise_magnitude,
                                                  max_height=self.cfg.terrain_noise_magnitude, step=0.005,
                                                  downsampled_scale=0.2)
-        elif choice < self.proportions[9]:
-            terrain_utils.random_uniform_terrain(terrain, min_height=-0.05, max_height=0.05,
+        elif choice < proportions[9]:
+            terrain_utils.random_uniform_terrain(subterrain, min_height=-0.05, max_height=0.05,
                                                  step=self.cfg.terrain_smoothness, downsampled_scale=0.2)
-            terrain.height_field_raw[0:terrain.length // 2, :] = 0
+            subterrain.height_field_raw[0:subterrain.length // 2, :] = 0
     
-    def gap_tilemaker(self, terrain, gap_size, platform_size):
-        gap_size = int(gap_size / terrain.horizontal_scale)
-        platform_size = int(platform_size / terrain.horizontal_scale)
+    def gap_tile_helper(self, subterrain, gap_size, platform_size):
+        gap_size = int(gap_size / subterrain.horizontal_scale)
+        platform_size = int(platform_size / subterrain.horizontal_scale)
 
-        center_x = terrain.length // 2
-        center_y = terrain.width // 2
-        x1 = (terrain.length - platform_size) // 2
+        center_x = subterrain.length // 2
+        center_y = subterrain.width // 2
+        x1 = (subterrain.length - platform_size) // 2
         x2 = x1 + gap_size
-        y1 = (terrain.width - platform_size) // 2
+        y1 = (subterrain.width - platform_size) // 2
         y2 = y1 + gap_size
 
-        terrain.height_field_raw[center_x-x2 : center_x + x2, center_y-y2 : center_y + y2] = -1000
-        terrain.height_field_raw[center_x-x1 : center_x + x1, center_y-y1 : center_y + y1] = 0
+        subterrain.height_field_raw[center_x-x2 : center_x + x2, center_y-y2 : center_y + y2] = -1000
+        subterrain.height_field_raw[center_x-x1 : center_x + x1, center_y-y1 : center_y + y1] = 0
 
-    def pit_tilemaker(self, terrain, gap_size, platform_size=1.):
-        gap_size = int(gap_size / terrain.horizontal_scale)
-        platform_size = int(platform_size / terrain.horizontal_scale)
+    def pit_tile_helper(self, subterrain, gap_size, platform_size=1.):
+        gap_size = int(gap_size / subterrain.horizontal_scale)
+        platform_size = int(platform_size / subterrain.horizontal_scale)
 
-        center_x = terrain.length // 2
-        center_y = terrain.width // 2
-        x1 = (terrain.length - platform_size) // 2
+        center_x = subterrain.length // 2
+        center_y = subterrain.width // 2
+        x1 = (subterrain.length - platform_size) // 2
         x2 = x1 + gap_size
-        y1 = (terrain.width - platform_size) // 2
+        y1 = (subterrain.width - platform_size) // 2
         y2 = y1 + gap_size
 
-        terrain.height_field_raw[center_x-x2 : center_x + x2, center_y-y2 : center_y + y2] = -1000
-        terrain.height_field_raw[center_x-x1 : center_x + x1, center_y-y1 : center_y + y1] = 0
+        subterrain.height_field_raw[center_x-x2 : center_x + x2, center_y-y2 : center_y + y2] = -1000
+        subterrain.height_field_raw[center_x-x1 : center_x + x1, center_y-y1 : center_y + y1] = 0
     
     # ============= Tile Implementations  ============================
-    def _tile_locomotion_random(self, terrain, row, col):
+        
+    def _tile_locomotion_random(self, subterrain, row, col, tile_type_proportions):
         choice = np.random.uniform(0, 1)
         difficulty = np.random.choice([0.5, 0.75, 0.9])
-        self.locomotion_tilemaker(terrain, choice, difficulty)
+        self.locomotion_tilemaker(subterrain, choice, difficulty, tile_type_proportions)
+        
 
-    def _tile_locomotion_curriculum(self, terrain, row, col):
+    def _tile_locomotion_curriculum(self, subterrain, row, col, tile_type_proportions):
         difficulty = row / self.cfg.num_rows
         choice = col / self.cfg.num_cols + 0.001
-        self.locomotion_tilemaker(terrain, choice, difficulty)
+        self.locomotion_tilemaker(subterrain, choice, difficulty, tile_type_proportions)
 
-    def _tile_valley(self, terrain, row, col):
-        width = terrain.width
-        gap_size = int(0 * width)
-        slope_size = int(0.5 * width)
+    def _tile_valley(self, subterrain, row, col):
+        width, length = subterrain.width, subterrain.length
+        hf = subterrain.height_field_raw
+        hor_scale, ver_scale = subterrain.horizontal_scale, subterrain.vertical_scale
+        gap_size = 0
+        slope_size = int(0.5 * length)
         x_left = slope_size
         x_right = x_left + gap_size
         slope = 0.1 * row
-        slope *= terrain.horizontal_scale / terrain.vertical_scale
+        slope *= hor_scale / ver_scale
         #noise_level = np.ceil(j * j) * (1 + slope ** 2) / 5
         noise_level = col * np.sqrt(1 + slope ** 2) / 6
         noises = np.random.normal(0, noise_level, size=(2 * x_left, width)) #- (noise_level / 2)
 
         # flat part at the bottom
-        terrain.height_field_raw[x_left : x_right, :] = -1. * slope * slope_size
+        hf[x_left : x_right, :] = -1. * slope * slope_size
         # banks of the valley
         for x in range(x_left):
-            for y in range(0, width):
-                terrain.height_field_raw[x, y] = (-1. * slope * x) + noises[x][y]
-                terrain.height_field_raw[width - x - 1, y] = (-1. * slope * x) + noises[x + x_left][y]
-        if self.calc_stats:
-            roughness = residual_variance(terrain.height_field_raw[:x_left, :], terrain.vertical_scale, terrain.horizontal_scale, width*width) / 2 #terrain_roughness_index(terrain.height_field_raw[:x_left, :]) / 2 
-            roughness += residual_variance(terrain.height_field_raw[x_right:, :], terrain.vertical_scale, terrain.horizontal_scale, width*width) / 2 # terrain_roughness_index(terrain.height_field_raw[x_right:, :]) / 2
+            for y in range(width):
+                hf[x, y] = (-1. * slope * x) + noises[x][y]
+                hf[length - x - 1, y] = (-1. * slope * x) + noises[x + x_left][y]
+        if self.cfg.calc_stats:
+            roughness = residual_variance(hf[:x_left, :], ver_scale, hor_scale, width*length) / 2 #terrain_roughness_index(terrain.height_field_raw[:x_left, :]) / 2 
+            roughness += residual_variance(hf[x_right:, :], ver_scale, hor_scale, width*length) / 2 # terrain_roughness_index(terrain.height_field_raw[x_right:, :]) / 2
             return {"roughness": roughness}
-        return None
 
-    def _tile_semivalley(self, terrain, row, col):
-        width = terrain.width
+    def _tile_semivalley(self, subterrain, row, col):
+        width, length = subterrain.width, subterrain.length
+        hf = subterrain.height_field_raw
+        hor_scale, ver_scale = subterrain.horizontal_scale, subterrain.vertical_scale
         slope = 0.1 * row
         roughness_level = 0.2 * col
-        heightmap_slope = slope * terrain.horizontal_scale / terrain.vertical_scale
+        heightmap_slope = slope * hor_scale / ver_scale
 
         #noise_level = np.ceil(j * j) * (1 + slope ** 2) / 5
         noise_level = roughness_level * np.sqrt(2 * np.pi) * (1 + slope ** 2) #** (3/4)
-        noises = np.random.normal(0, noise_level, size=(terrain.width, terrain.width)) #- (noise_level / 2)
-        for x in range(terrain.width):
-            for y in range(terrain.width):
-                terrain.height_field_raw[x, y] = (-1. * heightmap_slope * x) + noises[x][y]
-        if self.calc_stats:
-            area = (width ** 2) * (terrain.horizontal_scale ** 2) * np.sqrt(1 + slope ** 2)
-            roughness = residual_variance(terrain.height_field_raw, terrain.vertical_scale, terrain.horizontal_scale, area) #terrain_roughness_index(terrain.height_field_raw) 
-            return {"slope": slope, "roughness": roughness}
-        return None
+        noises = np.random.normal(0, noise_level, size=(width, length)) #- (noise_level / 2)
+        for x in range(length):
+            for y in range(width):
+                hf[x, y] = (-1. * heightmap_slope * x) + noises[x][y]
+        if self.cfg.calc_stats:
+            area = (width * length) * (hor_scale ** 2) * np.sqrt(1 + slope ** 2)
+            roughness = residual_variance(hf, ver_scale, hor_scale, area) #terrain_roughness_index(terrain.height_field_raw) 
+            return {"slope": slope, "slope_normal": slope_normal(slope), "roughness": roughness}
 
-    def _tile_perlin_noise(self, terrain, row, col):
+    def _tile_perlin_noise(self, subterrain, row, col):
         scale = 30.0
         height_multiplier = 50 * row
         octaves = 7
         persistence = 0.1 * col
         lacunarity = 2.0
         seed = np.random.randint(0,100)
-        width = terrain.width
-        world = np.zeros((width, width))
+        width, length = subterrain.width, subterrain.length
+        world = np.zeros((length, width))
 
-        for x in range(10, width-10):
+        for x in range(10, length-10):
             for y in range(10, width-10):
                 world[x][y] = noise.pnoise2(x/scale,
                                             y/scale,
@@ -287,15 +283,36 @@ class Terrain:
                                             repeaty=1024,
                                             base=seed) 
                 world[x][y] *= height_multiplier
-        terrain.height_field_raw = world.astype('int32')
+        subterrain.height_field_raw = world.astype('int32')
 
-    def _tile_slope(self, terrain, row, col, slope=1.0):
-        slope *= terrain.horizontal_scale / terrain.vertical_scale
-        for x in range(terrain.width):
-            terrain.height_field_raw[x, :] = (row * terrain.width + x) * slope
+    def _tile_slope(self, subterrain, row, col, slope=1.0):
+        slope *= subterrain.horizontal_scale / subterrain.vertical_scale
+        for x in range(subterrain.width):
+            subterrain.height_field_raw[x, :] = (row * subterrain.width + x) * slope
 
-    def _tile_flat(self, terrain, row, col):
-        terrain.height_field_raw[:] = 0
+    def _tile_flat(self, subterrain, row, col):
+        subterrain.height_field_raw[:] = 0
+
+# ======== Terrain Saving Dataclass ==============
+    
+@dataclass
+class SavedTerrain:
+    @dataclass
+    class Dimensions:
+        num_rows: int
+        num_cols: int
+        tile_width_px: int
+        tile_length_px: int
+        borderpx: int
+        horizontal_scale: float
+        vertical_scale: float
+    name: str
+    heightmap: np.ndarray
+    tile_origins: np.ndarray
+    dims: Dimensions
+    trimesh_vertices: Optional[np.ndarray] = None
+    trimesh_faces: Optional[np.ndarray] = None
+    stats: dict = field(default_factory=lambda: dict())
 
 # ======== Terrain Stats Helper Functions ========
 

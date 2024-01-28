@@ -1,15 +1,27 @@
 import numpy as np
-from typing import Tuple
-from dataclasses import dataclass
+from typing import Tuple, Dict, Any
+from dataclasses import dataclass, field
 from configs.definitions import (ObservationConfig, AlgorithmConfig, RunnerConfig, DomainRandConfig,
                                  NoiseConfig, ControlConfig, InitStateConfig, TerrainConfig,
                                  RewardsConfig, AssetConfig, CommandsConfig, TaskConfig, TrainConfig)
-from configs.overrides.terrain import FlatTerrainConfig
+from configs.overrides.terrain import FlatTerrainConfig, TrimeshTerrainConfig
 from configs.overrides.rewards import LeggedGymRewardsConfig
 
 #########
 # Task
 #########
+
+@dataclass
+class LocomotionCurriculumTerrainConfig(TrimeshTerrainConfig):
+    terrain_type: str = "locomotion_curriculum"
+    terrain_kwargs: Dict[str, Any] = field(default_factory=lambda: {
+        # terrain types for locomotion: [smooth slope, rough slope, stairs up, stairs down, discrete]
+        'tile_type_proportions': (0.1, 0.1, 0.35, 0.25, 0.2)
+    })
+
+@dataclass
+class LocomotionRandomizedTerrainConfig(LocomotionCurriculumTerrainConfig):
+    terrain_type: str = "locomotion_randomized"
 
 @dataclass
 class LocomotionTaskConfig(TaskConfig):

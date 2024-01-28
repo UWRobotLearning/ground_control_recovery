@@ -1070,7 +1070,7 @@ class A1(BaseEnv):
             self.terrain_levels = torch.randint(0, max_init_level+1, (self.num_envs,), device=self.device)
             self.terrain_types = torch.div(torch.arange(self.num_envs, device=self.device), (self.num_envs/self.terrain_cfg.num_cols), rounding_mode='floor').to(torch.long)
             self.max_terrain_level = self.terrain_cfg.num_rows
-            self.terrain_origins = torch.from_numpy(self.terrain.env_origins).to(self.device).to(torch.float)
+            self.terrain_origins = torch.from_numpy(self.terrain.tile_origins).to(self.device).to(torch.float)
             self.env_origins[:] = self.terrain_origins[self.terrain_levels, self.terrain_types]
         else:
             self.custom_origins = False

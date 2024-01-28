@@ -1,10 +1,8 @@
 # Ege
-import glob
-import numpy as np
 from typing import Tuple
 from dataclasses import dataclass, field
 from configs.definitions import (EnvConfig, ObservationConfig, AlgorithmConfig, RunnerConfig, DomainRandConfig,
-                                 NoiseConfig, ControlConfig, InitStateConfig, TerrainConfig,
+                                 NoiseConfig, ControlConfig, InitStateConfig, GoalStateConfig, CurriculumConfig,
                                  RewardsConfig, AssetConfig, CommandsConfig, TaskConfig, TrainConfig)
 from configs.overrides.terrain import TrimeshTerrainConfig
 
@@ -26,45 +24,39 @@ class RecoveryEnvConfig(EnvConfig):
 class RecoveryObservationConfig(ObservationConfig):
     base_vel_in_obs: bool = True  # whether the base (linear/angular) velocity should be in policy observation
 
-@dataclass 
-class RecoveryDomainRandConfig(DomainRandConfig):
-        # Ege - adding randomized limb angles and base orientation
-        randomize_base_orientation: bool = True
-        randomize_dof_orientation: bool = True
-
-# Ege Class
+# Ege
 @dataclass
-class GoalStateConfig:
-    min_height_to_goal_ratio: float = 0.7
-    max_height_to_goal_ratio: float = 1.2
-    max_speed: float = 0.25
-    max_angular_vel: float = 0.2
-    max_z_deviation: float = 0.9
-    max_xy_distance: float = 2
-    required_goal_time_s: float = 1
-    reset_on_goal: bool = True
-
-# Ege - created class for rules on how the curriculum is structured
-@dataclass
-class CurriculumConfig:
-    success_rate_mean_window: int = 10
-    promotion_success_rate: float = 0.9
-    demotion_success_rate: float = 0.6
-
-@dataclass
-class RecoveryTerrainConfig(TrimeshTerrainConfig):
-    terrain_type: str = "semivalley"
-    static_friction: float = 1.2 # Ege - used to be 1.0
-    dynamic_friction: float = 1.2 # Ege - used to be 1.0
-    restitution: float = 0.
-    slope_threshold: float = 0.99 # slopes above this threshold will be corrected to vertical surfaces # Ege - was 0.75
-    max_init_terrain_level: int = 0
+class RecoveryInitStateConfig(InitStateConfig):
+    pos: Tuple[float, float, float] = (0.0, 0.0, 0.5) # x,y,z [m]
+    rot: Tuple[float, float, float, float] = (0.0, 1.0, 0.0, 0.0) # x,y,z,w [quat] 
+    lin_vel: Tuple[float, float, float] = (0.0, 0.0, 0.0) # x,y,z [m/s]
+    ang_vel: Tuple[float, float, float] = (0.0, 0.0, 0.0) # x,y,z [rad/s]
+    lin_vel_noise: float = 0.0
+    ang_vel_noise: float = 0.0
+    # NOTE: theres a difference in default joint_angles from a1_config.py in old codebase to INIT_JOINT_ANGLES in the current definitions.py
+    # hips -> all 0 instead of spread at -0.1, 0.1, thighs -> all 0.9 instead of spread at 0.8, 1., calves -> all -1.8 instead of -1.5
     # Ege
     equal_distribution: dict = field(default_factory=lambda: dict(
         enabled=True,
         row_range=(0,0), #end-inclusive
         col_range=(0,9)  #end-inclusive
     ))
+
+@dataclass 
+class RecoveryDomainRandConfig(DomainRandConfig):
+        # Ege - adding randomized limb angles and base orientation
+        randomize_base_orientation: bool = True
+        randomize_dof_orientation: bool = True
+
+@dataclass
+class RecoveryTerrainConfig(TrimeshTerrainConfig):
+    terrain_type: str = "semivalley"
+    terrain_kwargs: dict = field(default_factory=lambda: dict())
+    static_friction: float = 1.2 # Ege - used to be 1.0
+    dynamic_friction: float = 1.2 # Ege - used to be 1.0
+    restitution: float = 0.
+    slope_threshold: float = 0.99 # slopes above this threshold will be corrected to vertical surfaces # Ege - was 0.75
+    max_init_terrain_level: int = 0
     record_roughness: bool = False
     record_heightmaps: bool = True
 
@@ -103,16 +95,7 @@ class RecoveryTaskConfig(TaskConfig):
             heading=(0., 0.)
         )
     )
-    init_state: InitStateConfig = InitStateConfig(
-        pos = (0.0, 0.0, 0.5), # x,y,z [m]
-        rot = (0.0, 1.0, 0.0, 0.0), # x,y,z,w [quat] 
-        lin_vel = (0.0, 0.0, 0.0), # x,y,z [m/s]
-        ang_vel = (0.0, 0.0, 0.0), # x,y,z [rad/s]
-        lin_vel_noise = 0.0,
-        ang_vel_noise = 0.0,
-        # NOTE: theres a difference in default joint_angles from a1_config.py in old codebase to INIT_JOINT_ANGLES in the current definitions.py
-        # hips -> all 0 instead of spread at -0.1, 0.1, thighs -> all 0.9 instead of spread at 0.8, 1., calves -> all -1.8 instead of -1.5
-    )
+    init_state: RecoveryInitStateConfig = RecoveryInitStateConfig()
     control: ControlConfig = ControlConfig(
         stiffness=dict(joint=20.),
         damping=dict(joint=0.5),
@@ -136,7 +119,6 @@ class RecoveryTaskConfig(TaskConfig):
             ang_vel=0.3, #prev 0.25
         )
     )
-
     curriculum: CurriculumConfig = CurriculumConfig()
     goal_state: GoalStateConfig = GoalStateConfig()
 

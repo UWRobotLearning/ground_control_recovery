@@ -1,6 +1,6 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from configs.definitions import TerrainConfig
-from typing import Tuple
+from typing import Tuple, Dict, Any
 
 @dataclass
 class FlatTerrainConfig(TerrainConfig):
@@ -11,7 +11,7 @@ class FlatTerrainConfig(TerrainConfig):
 class TrimeshTerrainConfig(TerrainConfig):
     mesh_type: str = "trimesh"
     curriculum: bool = True
-    terrain_type: str = "locomotion_curriculum"
+    terrain_type: str = "flat"
     horizontal_scale: float = 0.1 # [m]
     vertical_scale: float = 0.005 # [m]
     border_size: float = 25. # [m]
@@ -21,9 +21,8 @@ class TrimeshTerrainConfig(TerrainConfig):
     measured_points_y: Tuple[float, ...] = (-0.5, -0.4, -0.3, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5)
 
     max_init_terrain_level: int = 5
-    terrain_length: float = 8.
-    terrain_width: float = 8.
+    tile_length: float = 8.
+    tile_width: float = 8.
     num_rows: int = 10
     num_cols: int = 20
-    terrain_proportions: Tuple[float, ...] = (0.1, 0.1, 0.35, 0.25, 0.2)
     slope_threshold: float = 0.75

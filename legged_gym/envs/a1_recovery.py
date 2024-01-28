@@ -1131,6 +1131,9 @@ class A1Recovery(BaseEnv):
         start_pose.p = gymapi.Vec3(*self.base_init_state[:3])
 
         self._get_env_origins()
+        # Ege
+        self._get_slope_normals()
+
         env_lower = gymapi.Vec3(0., 0., 0.)
         env_upper = gymapi.Vec3(0., 0., 0.)
         self.actor_handles = []
@@ -1175,12 +1178,11 @@ class A1Recovery(BaseEnv):
             # put robots at the origins defined by the terrain
             max_init_level = self.terrain_cfg.max_init_terrain_level if self.terrain_cfg.curriculum else self.terrain_cfg.num_rows-1
             # Ege - implement equal distribution to the specified range of cells
-            # TODO: hasattr is not OK here, figure out incorporating this to terrain config
-            if hasattr(self.terrain_cfg, 'equal_distribution') and self.terrain_cfg.equal_distribution.enabled:
+            if self.init_state_cfg.equal_distribution.enabled:
                 self.terrain_levels = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
                 self.terrain_types = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
-                min_col, max_col = self.terrain_cfg.equal_distribution.col_range
-                min_row, max_row = self.terrain_cfg.equal_distribution.row_range
+                min_col, max_col = self.init_state_cfg.equal_distribution.col_range
+                min_row, max_row = self.init_state_cfg.equal_distribution.row_range
                 col_len = max_col + 1 - min_col
                 row_len = max_row + 1 - min_row
                 terrain_size = row_len * col_len
@@ -1194,11 +1196,8 @@ class A1Recovery(BaseEnv):
                 self.terrain_types = torch.div(torch.arange(self.num_envs, device=self.device), (self.num_envs/self.terrain_cfg.num_cols), rounding_mode='floor').to(torch.long)
             
             self.max_terrain_level = self.terrain_cfg.num_rows
-            self.terrain_origins = torch.from_numpy(self.terrain.env_origins).to(self.device).to(torch.float)
+            self.terrain_origins = torch.from_numpy(self.terrain.tile_origins).to(self.device).to(torch.float)
             self.env_origins[:] = self.terrain_origins[self.terrain_levels, self.terrain_types]
-            # Ege - also record slope normals
-            tile_slope_normals = torch.from_numpy(self.terrain.slope_normals).to(self.device).to(torch.float)
-            self.slope_normals = tile_slope_normals[self.terrain_levels, self.terrain_types]
         else:
             self.custom_origins = False
             self.env_origins = torch.zeros(self.num_envs, 3, device=self.device, requires_grad=False)
@@ -1210,7 +1209,13 @@ class A1Recovery(BaseEnv):
             self.env_origins[:, 0] = spacing * xx.flatten()[:self.num_envs]
             self.env_origins[:, 1] = spacing * yy.flatten()[:self.num_envs]
             self.env_origins[:, 2] = 0.
-            # Ege - create standard slope normals for plane
+
+    # Ege
+    def _get_slope_normals(self):
+        if self.terrain_cfg.mesh_type in ["heightfield", "trimesh"] and 'slope_normal' in self.terrain.stats:
+            tile_slope_normals = torch.from_numpy(self.terrain.stats['slope_normals']).to(self.device).to(torch.float)
+            self.slope_normals = tile_slope_normals[self.terrain_levels, self.terrain_types]
+        else:
             slope_normal = torch.tensor([0, 0, 1], device=self.device, requires_grad=False)
             self.slope_normals = slope_normal.unsqueeze(0).repeat(self.num_envs, 1)
 

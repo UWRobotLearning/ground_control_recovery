@@ -45,9 +45,11 @@ class ObservationConfig:
 
 @dataclass
 class TerrainConfig:
-    mesh_type: str = 'plane' # one of [None, 'plane', 'heightfield', 'trimesh', 'valley']
+    mesh_type: str = 'plane' # one of [None, 'plane', 'heightfield', 'trimesh']
+    terrain_type: Optional[str] = None # function name to build grid from (named a "tile function"), only used if mesh_type is 'heightfield' or 'trimesh'
+    terrain_kwargs: Dict[str, Any] = field(default_factory=lambda: dict())  # dict of arguments for selected tile function
+    load_inner_path: Optional[str] = None # file path (with .pickle ending) relative to 'resources/terrain' for loading a saved terrain, skips terrain generation if given
     curriculum: bool = False
-    terrain_type: str = 'locomotion_curriculum' # function name to build grid from (named a "tile function")
     static_friction: float = 1.
     dynamic_friction: float = 1.
     restitution: float = 0.
@@ -55,18 +57,18 @@ class TerrainConfig:
     measured_points_y: Tuple[float, ...] = (0.,)
     horizontal_scale: Optional[float] = None # [m]
     vertical_scale: Optional[float] = None # [m]
-    selected: bool = False # select a unique terrain type and pass all arguments
-    terrain_kwargs: Dict[str, Any] = field(default_factory=lambda: dict()) # dict of arguments for selected terrain
     max_init_terrain_level: Optional[int] = None # starting curriculum state
-    terrain_length: Optional[float] = None
-    terrain_width: Optional[float] = None
+    tile_length: Optional[float] = None
+    tile_width: Optional[float] = None
     terrain_noise_magnitude: Optional[float] = None
     terrain_smoothness: Optional[float] = None
-    num_rows: Optional[int] = None # number of terrain rows (levels)
-    num_cols: Optional[int] = None # number of terrain columns (types)
+    num_rows: Optional[int] = None # number of rows (levels) (in number of tiles per terrain grid)
+    num_cols: Optional[int] = None # number of tile columns (types) (in number of tiles per terrain grid)
     border_size: Optional[float] = None # [m]
-    terrain_proportions: Optional[Tuple[float, float, float, float, float]] = None # terrain types: [smooth slope, rough slope, stairs up, stairs down, discrete]
     slope_threshold: Optional[float] = None # trimesh only; slopes above this threshold will be corrected to vertical surfaces
+    calc_stats: bool = False # calculates extra stats for terrain
+    log_stats: bool = False # saves extra stats to current experiment log folder
+    save_terrain: bool = False # if terrain isn't loaded, saves it to 'resources/terrain' with the file name same as terrain_type.
 
 @dataclass
 class CommandsConfig:
@@ -97,6 +99,12 @@ class InitStateConfig:
     default_joint_angles: Dict[str, float] = field(
         default_factory=lambda: INIT_JOINT_ANGLES # target angles [rad] when action = 0.
     )
+    # Ege
+    equal_distribution: dict = field(default_factory=lambda: dict(
+        enabled=False,
+        row_range=(0,0), #end-inclusive
+        col_range=(0,0)  #end-inclusive
+    ))
 
 @dataclass
 class ControlConfig:
@@ -274,14 +282,14 @@ class SimConfig:
     physx: PhysxConfig = PhysxConfig()
 
 
-# Ege
+# Ege - used in the terrain curriculum for the recovery task
 @dataclass
 class CurriculumConfig:
     success_rate_mean_window: int = 1
     promotion_success_rate: float = 0.9
     demotion_success_rate: float = 0.6
 
-# Ege
+# Ege - used in specifying successful end states for the recovery task
 @dataclass
 class GoalStateConfig:
     min_height_to_goal_ratio: float = 0.7

@@ -47,16 +47,7 @@ class TrainScriptConfig:
     checkpoint_root: str = ""
     logging_root: str = from_repo_root("../experiment_logs")
 
-    task: TaskConfig = RecoveryTaskConfig(
-        env=RecoveryEnvConfig(
-            episode_length_s=3
-        ),
-        terrain=RecoveryTerrainConfig(
-            mesh_type="trimesh",
-            curriculum=True,
-            terrain_type="semivalley"
-        )
-    )  #LocomotionTaskConfig()
+    task: TaskConfig = RecoveryTaskConfig()  #LocomotionTaskConfig()
     train: TrainConfig = RecoveryTrainConfig()  #TrainConfig()
     codesave: CodesaveConfig = LogsCodesaveConfig()
 
